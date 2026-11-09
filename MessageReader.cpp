@@ -146,6 +146,33 @@ static void ReaderCtor()
     static Hooks::Hook hook_ReadJSON;
     static Hooks::Hook hook_ReadOBJECTIDServer;
 
+    // Other plugins look at a message before the engine's handler reads it by making the
+    // same Read* calls inside a Utils::MessagePeek, and throw a message away with
+    // Utils::ClearReadMessage. Neither can reach our read state on its own, since it is
+    // not the engine's read buffer: a peek's reads pop our fragments like any others.
+    // So a peek saves the fragment queue and puts it back when it ends, and a clear
+    // empties it. Outside a WS message there is nothing of ours to save.
+    // (niv/NWNX_WSNetLayer#3: before this, peeks read the engine's buffer directly,
+    // which a WS message never sets, and crashed on what the last UDP message left.)
+    Utils::RegisterMessageReadHandler({
+        [](CNWSMessage*) -> std::function<void()>
+        {
+            if (!s_in_ws_handler)
+                return {};
+
+            return [saved = s_read_buffer, pos = s_stream_pos]()
+            {
+                s_read_buffer = saved;
+                s_stream_pos = pos;
+            };
+        },
+        [](CNWSMessage*)
+        {
+            if (s_in_ws_handler)
+                s_read_buffer.clear();
+        },
+    });
+
     hook_HandlePlayerToServerMessage = Hooks::HookFunction(
         &CNWSMessage::HandlePlayerToServerMessage,
         +[](CNWSMessage* p, uint32_t nPlayerId, uint8_t* pBuffer, uint32_t nBufferSize) -> void
